@@ -14,7 +14,9 @@
       "require": "./dist/index.cjs"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "sideEffects": false,
   "scripts": {
     "build": "tsup ./src/index.ts --dts --format esm,cjs,iife --global-name NexID --minify --sourcemap --clean",
@@ -22,6 +24,6 @@
   },
   "devDependencies": {
     "tsup": "8.3.0",
-    "typescript": "5.4.5"
+    "typescript": "5.8.3"
   }
 }
