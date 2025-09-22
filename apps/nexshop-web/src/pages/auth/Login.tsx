@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { FiMail, FiLogIn, FiShield } from "react-icons/fi";
-import { initSDK } from "../../services/identity/client";
+import { initSDK } from "@nexshop/nexid-sdk";
 import { sha256Hex } from "../../lib/hash";
 import { IDENTITY_ENDPOINT, IDENTITY_API_KEY } from "../../services/identity/config";
 import Status from "../../components/ui/Status";

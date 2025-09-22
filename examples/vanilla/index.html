@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>NexID Vanilla Example</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root{--bg:#0b1020;--paper:#0f172a;--primary:#7345D6;--primary-600:#6136c7;--muted:#94a3b8}
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0;
+      background:
+        radial-gradient(1200px 700px at 10% -20%,rgba(115,69,214,.20),transparent),
+        radial-gradient(900px 500px at 110% 0%,rgba(59,130,246,.12),transparent),
+        linear-gradient(180deg,#0b1020 0%,#0b1020 100%);
+      color:#fff;
+      font-family:Inter,system-ui,Arial,Helvetica,sans-serif
+    }
+    .wrap{min-height:100svh;display:grid;place-items:center;padding:24px}
+    .card{
+      width:min(100%,460px);
+      background:rgba(255,255,255,.06);
+      backdrop-filter:blur(8px);
+      border:1px solid rgba(255,255,255,.10);
+      border-radius:18px;
+      box-shadow:0 8px 30px rgba(0,0,0,.35);
+      padding:24px
+    }
+    .row{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+    .badge{width:44px;height:44px;display:grid;place-items:center;border-radius:12px;background:rgba(115,69,214,.22);color:#c4b5fd;font-size:20px}
+    .title{font-weight:700;font-size:18px;line-height:1}
+    .subtitle{font-size:12px;color:rgba(255,255,255,.65);margin-top:4px}
+    .label{font-size:13px;color:rgba(255,255,255,.85);margin:8px 0 6px}
+    .input{
+      width:100%;
+      border-radius:12px;
+      background:rgba(255,255,255,.06);
+      border:1px solid rgba(255,255,255,.12);
+      color:#fff;padding:12px 14px;outline:none
+    }
+    .input:focus{border-color:rgba(115,69,214,.7);box-shadow:0 0 0 3px rgba(115,69,214,.25)}
+    .btn{
+      width:100%;
+      display:inline-flex;align-items:center;justify-content:center;gap:8px;
+      border:0;border-radius:12px;background:var(--primary);color:#fff;
+      font-weight:600;padding:12px 14px;cursor:pointer;transition:.18s transform,.18s background
+    }
+    .btn:hover{background:var(--primary-600)}
+    .btn:active{transform:scale(.99)}
+    .btn:disabled{opacity:.6;cursor:not-allowed}
+    .pill{margin-top:14px;border:1px solid currentColor;border-radius:12px;padding:10px 12px;font-size:13px;display:flex;flex-direction:column;gap:4px}
+    .pill.allow{color:#86efac;background:rgba(34,197,94,.15);border-color:rgba(34,197,94,.35)}
+    .pill.review{color:#fde68a;background:rgba(245,158,11,.15);border-color:rgba(245,158,11,.35)}
+    .pill.deny{color:#fca5a5;background:rgba(239,68,68,.15);border-color:rgba(239,68,68,.35)}
+    .err{margin-top:8px;color:#fca5a5;font-size:13px}
+    .nav{
+      position:fixed;top:14px;left:50%;transform:translateX(-50%);
+      display:flex;gap:8px;background:rgba(255,255,255,.06);backdrop-filter:blur(8px);
+      border:1px solid rgba(255,255,255,.12);padding:6px;border-radius:999px
+    }
+    .nav a{padding:8px 16px;border-radius:999px;text-decoration:none;color:#fff;background:rgba(255,255,255,.08);font-weight:600}
+    .nav a.active{background:var(--primary)}
+    .sp{height:4px;border-radius:999px;background:linear-gradient(90deg,var(--muted),var(--paper),rgba(115,69,214,.7));margin-top:16px}
+    @media (max-width:420px){.card{padding:20px}.badge{width:40px;height:40px}}
+  </style>
+</head>
+<body>
+  <div class="nav">
+    <a href="#login" id="tabLogin" class="active">Login</a>
+    <a href="#checkout" id="tabCheckout">Checkout</a>
+  </div>
+
+  <div class="wrap">
+    <div class="card" id="viewLogin">
+      <div class="row">
+        <div class="badge">🔐</div>
+        <div>
+          <div class="title">NexShop</div>
+          <div class="subtitle">Faça login para continuar</div>
+        </div>
+      </div>
+
+      <div class="label">Email</div>
+      <input id="email" class="input" type="email" placeholder="voce@exemplo.com" />
+      <button id="btnLogin" class="btn" style="margin-top:12px">Entrar</button>
+      <div id="errLogin" class="err" style="display:none"></div>
+      <div id="statusLogin"></div>
+      <div class="sp"></div>
+    </div>
+
+    <div class="card" id="viewCheckout" style="display:none">
+      <div class="row">
+        <div class="badge">🛒</div>
+        <div>
+          <div class="title">Checkout</div>
+          <div class="subtitle">Confirme o pagamento</div>
+        </div>
+      </div>
+
+      <div class="label">Valor</div>
+      <input id="amount" class="input" value="199.90" />
+      <button id="btnPay" class="btn" style="margin-top:12px">Pagar</button>
+      <div id="statusPay"></div>
+      <div class="sp"></div>
+    </div>
+  </div>
+
+  <script src="../../packages/nexid-sdk/dist/index.global.js"></script>
+  <script>
+    const ENDPOINT = "http://localhost:3000/identity/verify";
+    const API_KEY = "dev-123";
+    const sdk = window.NexID.initSDK({ endpoint: ENDPOINT, apiKey: API_KEY });
+
+    function isValidEmail(v){const s=(v||"").trim();return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i.test(s)}
+    async function sha256Hex(s){const e=new TextEncoder().encode(s);const h=await crypto.subtle.digest("SHA-256",e);return Array.from(new Uint8Array(h)).map(b=>b.toString(16).padStart(2,"0")).join("")}
+    function renderStatus(el,res){
+      const cls = res.status==="allow"?"allow":res.status==="deny"?"deny":"review";
+      el.innerHTML = `<div class="pill ${cls}"><div style="font-weight:700;text-transform:uppercase">${res.status} • SCORE ${Math.round(res.score)}</div><div class="subtitle">${res.requestId}</div></div>`;
+    }
+
+    const tabLogin=document.getElementById("tabLogin");
+    const tabCheckout=document.getElementById("tabCheckout");
+    const viewLogin=document.getElementById("viewLogin");
+    const viewCheckout=document.getElementById("viewCheckout");
+    function switchTo(hash){
+      const isLogin = hash !== "#checkout";
+      tabLogin.classList.toggle("active",isLogin);
+      tabCheckout.classList.toggle("active",!isLogin);
+      viewLogin.style.display=isLogin?"block":"none";
+      viewCheckout.style.display=isLogin?"none":"block";
+    }
+    window.addEventListener("hashchange",()=>switchTo(location.hash));
+    switchTo(location.hash||"#login");
+
+    const email=document.getElementById("email");
+    const btnLogin=document.getElementById("btnLogin");
+    const errLogin=document.getElementById("errLogin");
+    const statusLogin=document.getElementById("statusLogin");
+    btnLogin.addEventListener("click",async()=>{
+      statusLogin.innerHTML="";errLogin.style.display="none";errLogin.textContent="";
+      if(!isValidEmail(email.value)){errLogin.textContent="Informe um e-mail válido";errLogin.style.display="block";return;}
+      btnLogin.disabled=true;btnLogin.textContent="Verificando...";
+      try{
+        const hash=await sha256Hex(email.value);
+        const r=await sdk.verify({context:"login",emailHash:hash});
+        renderStatus(statusLogin,r);
+      }finally{btnLogin.disabled=false;btnLogin.textContent="Entrar";}
+    });
+
+    const amount=document.getElementById("amount");
+    const btnPay=document.getElementById("btnPay");
+    const statusPay=document.getElementById("statusPay");
+    btnPay.addEventListener("click",async()=>{
+      statusPay.innerHTML="";
+      btnPay.disabled=true;btnPay.textContent="Verificando...";
+      try{
+        const r=await sdk.verify({context:"checkout"});
+        renderStatus(statusPay,r);
+      }finally{btnPay.disabled=false;btnPay.textContent="Pagar";}
+    });
+  </script>
+</body>
+</html>
