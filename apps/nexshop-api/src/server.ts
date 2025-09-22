@@ -37,12 +37,12 @@ const app = express();
 const PORT = Number(process.env.PORT || 3000);
 const ORIGIN = process.env.CORS_ORIGIN || "http://localhost:5173";
 const API_KEY = process.env.API_KEY || "dev-123";
+const HTTPS_ONLY = String(process.env.HTTPS_ONLY || "false").toLowerCase() === "true";
+const RATE_WINDOW_MS = Number(process.env.RATE_WINDOW_MS || 60000);
+const RATE_MAX = Number(process.env.RATE_MAX || 120);
 
 function parseList(v?: string) {
-  return (v || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
+  return (v || "").split(",").map((s) => s.trim()).filter(Boolean);
 }
 
 const CFG = {
@@ -58,21 +58,65 @@ const CFG = {
   callbackSecret: process.env.CALLBACK_SECRET || ""
 };
 
+app.set("trust proxy", true);
+
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", ORIGIN);
+  res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Headers", "content-type, x-api-key, x-async");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  res.setHeader("Cross-Origin-Resource-Policy", "same-site");
+  if (process.env.NODE_ENV === "production" || HTTPS_ONLY) {
+    res.setHeader("Strict-Transport-Security", "max-age=15552000; includeSubDomains");
+    const xfproto = String(req.headers["x-forwarded-proto"] || "");
+    const isHttps = req.secure || xfproto.includes("https");
+    const isLocal = /localhost|127\.0\.0\.1/.test(String(req.headers.host || ""));
+    if (!isHttps && !isLocal) return res.status(403).json({ error: "https_required" });
+  }
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
 
-app.use(express.json());
+app.use(express.json({ limit: "25kb" }));
+
+const rl = new Map<string, { count: number; resetAt: number }>();
+function rateLimit(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const ip = parseIp(req);
+  const now = Date.now();
+  const cur = rl.get(ip);
+  if (!cur || now > cur.resetAt) {
+    rl.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
+    return next();
+  }
+  cur.count += 1;
+  if (cur.count > RATE_MAX) return res.status(429).json({ error: "rate_limited" });
+  next();
+}
+app.use(rateLimit);
 
 function parseIp(req: express.Request) {
   const xff = req.headers["x-forwarded-for"];
   if (typeof xff === "string" && xff.length) return xff.split(",")[0].trim();
   if (Array.isArray(xff) && xff.length) return xff[0].split(",")[0].trim();
   return (req.ip || "").toString();
+}
+
+function sameOrigin(req: express.Request) {
+  const o = String(req.headers.origin || "");
+  if (o && o === ORIGIN) return true;
+  const ref = String(req.headers.referer || "");
+  try {
+    if (ref) {
+      const r = new URL(ref);
+      return `${r.protocol}//${r.host}` === ORIGIN;
+    }
+  } catch {}
+  return false;
 }
 
 function scoreFromSnapshot(s: ClientSnapshot) {
@@ -90,25 +134,20 @@ function computeDecision(body: VerifyRequest, ip: string, requestId: string): Ve
   if (CFG.blockedIps.includes(ip)) return { status: "deny", score: 10, reasons: ["blocked_ip"], requestId, context: body.context, timestamp: Date.now() };
   if (body.emailHash && CFG.blockedEmailHashes.includes(body.emailHash)) return { status: "deny", score: 10, reasons: ["blocked_email"], requestId, context: body.context, timestamp: Date.now() };
   if (body.userId && CFG.blockedUserIds.includes(body.userId)) return { status: "deny", score: 10, reasons: ["blocked_user"], requestId, context: body.context, timestamp: Date.now() };
-
   let score0to1 = scoreFromSnapshot(body.snapshot);
   if (CFG.trustedIps.includes(ip)) score0to1 = Math.min(1, score0to1 + 0.1);
   if (body.emailHash && CFG.trustedEmailHashes.includes(body.emailHash)) score0to1 = Math.min(1, score0to1 + 0.1);
   if (body.userId && CFG.trustedUserIds.includes(body.userId)) score0to1 = Math.min(1, score0to1 + 0.1);
-
   const adjusted = Math.max(0, Math.min(1, score0to1 * (1 - 0.3 * CFG.sensitivity)));
   const score = Math.round(adjusted * 100);
-
   let status: RiskDecision = "deny";
   if (score >= 75) status = "allow";
   else if (score >= CFG.reviewMinScore) status = "review";
-
   const reasons: string[] = [];
   if (body.snapshot.tabInactiveMs >= 60000) reasons.push("long_inactive_tab");
   if (body.snapshot.pageTimeMs < 1500) reasons.push("low_page_time");
   if (body.snapshot.mouseMoves < 3) reasons.push("low_mouse_activity");
   if (reasons.length === 0) reasons.push("ok");
-
   return { status, score, reasons, requestId, context: body.context, timestamp: Date.now() };
 }
 
@@ -121,18 +160,13 @@ function isAsync(req: express.Request) {
 }
 
 app.post("/identity/verify", async (req, res) => {
-  if (req.get("x-api-key") !== API_KEY) return res.status(401).json({ error: "unauthorized" });
+  const hasKey = req.get("x-api-key") === API_KEY;
+  const fromAllowedOrigin = sameOrigin(req);
+  if (!hasKey && !fromAllowedOrigin) return res.status(401).json({ error: "unauthorized" });
   const ip = parseIp(req);
   const body = req.body as VerifyRequest;
-
-  const valid =
-    body &&
-    (body.context === "login" || body.context === "checkout" || body.context === "sensitive") &&
-    body.snapshot &&
-    typeof body.snapshot === "object";
-
+  const valid = body && (body.context === "login" || body.context === "checkout" || body.context === "sensitive") && body.snapshot && typeof body.snapshot === "object";
   if (!valid) return res.status(400).json({ error: "invalid_payload" });
-
   if (isAsync(req)) {
     const requestId = randomUUID();
     setTimeout(async () => {
@@ -142,10 +176,7 @@ app.post("/identity/verify", async (req, res) => {
         try {
           await fetch(CFG.callbackUrl, {
             method: "POST",
-            headers: {
-              "content-type": "application/json",
-              ...(CFG.callbackSecret ? { "x-callback-secret": CFG.callbackSecret } : {})
-            },
+            headers: { "content-type": "application/json", ...(CFG.callbackSecret ? { "x-callback-secret": CFG.callbackSecret } : {}) },
             body: JSON.stringify(resp)
           });
         } catch {}
@@ -153,7 +184,6 @@ app.post("/identity/verify", async (req, res) => {
     }, 1500);
     return res.status(202).json({ status: "review", score: 0, reasons: ["processing"], requestId });
   }
-
   const requestId = randomUUID();
   const resp = computeDecision(body, ip, requestId);
   return res.status(200).json(resp);
