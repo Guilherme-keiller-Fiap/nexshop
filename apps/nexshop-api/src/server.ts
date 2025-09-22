@@ -5,6 +5,7 @@ import cors from "cors";
 import { createVerifyMiddleware } from "./middleware/identity.js";
 import { rateLimit } from "./middleware/rateLimit.js";
 import { apiKey } from "./middleware/apiKey.js";
+import { resultRouter } from "./routes/result.js";
 
 const app = express();
 const origins = (process.env.CORS_ORIGIN || "http://localhost:5173").split(",").map((s) => s.trim());
@@ -23,6 +24,8 @@ app.post(
   rateLimit({ windowMs: 60_000, max: 20 }),
   createVerifyMiddleware({ sensitivity: 0.5 })
 );
+
+app.use(resultRouter);
 
 const port = Number(process.env.PORT || 3000);
 app.listen(port, () => {

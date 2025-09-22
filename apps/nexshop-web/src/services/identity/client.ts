@@ -1,74 +1,21 @@
-import type { VerifyRequest, VerifyResponse } from "../../types";
+import { initSDK, type VerifyResponse } from "@nexshop/nexid-sdk";
+import { IDENTITY_ENDPOINT, IDENTITY_API_KEY } from "./config";
 
-type InitOptions = {
-  endpoint: string;
-  apiKey?: string;
-  context?: VerifyRequest["context"];
-  sampleRate?: number;
-};
+const sdk = initSDK({ endpoint: IDENTITY_ENDPOINT, apiKey: IDENTITY_API_KEY });
 
-let started = false;
-let sessionId = crypto.randomUUID();
-let mouseMoves = 0;
-let tabInactiveMs = 0;
-let lastBlur = 0;
-let pageStart = Date.now();
-
-function snapshot(): VerifyRequest["snapshot"] {
-  const nav = navigator as any;
-  return {
-    userAgent: navigator.userAgent,
-    languages: navigator.languages,
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone ?? "unknown",
-    screen: { w: screen.width, h: screen.height, dpr: devicePixelRatio },
-    platform: nav.platform ?? "unknown",
-    sessionId,
-    pageTimeMs: Date.now() - pageStart,
-    mouseMoves,
-    tabInactiveMs,
-    lastActivityTs: Date.now(),
-    sdkVersion: "1.0.0"
-  };
-}
-
-export function initSDK(opts: InitOptions) {
-  if (!started) {
-    started = true;
-    window.addEventListener("mousemove", () => { mouseMoves++; }, { passive: true });
-    window.addEventListener("blur", () => { lastBlur = Date.now(); }, { passive: true });
-    window.addEventListener("focus", () => {
-      if (lastBlur) tabInactiveMs += Date.now() - lastBlur;
-    }, { passive: true });
+export async function verifyIdentity(params: {
+  context: "login" | "checkout" | "sensitive";
+  emailHash?: string;
+  userId?: string;
+  async?: boolean;
+}): Promise<VerifyResponse> {
+  const r = await sdk.verify(
+    { context: params.context, emailHash: params.emailHash, userId: params.userId },
+    { async: !!params.async }
+  );
+  if (r.status === "processing") {
+    const final = await sdk.poll(r.requestId, { intervalMs: 700, timeoutMs: 7000 });
+    return final;
   }
-
-  return {
-    async verify(payload: Partial<Omit<VerifyRequest, "snapshot">> = {}): Promise<VerifyResponse> {
-      const body: VerifyRequest = {
-        context: payload.context ?? opts.context ?? "login",
-        userId: payload.userId,
-        emailHash: payload.emailHash,
-        snapshot: snapshot()
-      };
-      try {
-        const res = await fetch(opts.endpoint, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            ...(opts.apiKey ? { "x-api-key": opts.apiKey } : {})
-          },
-          body: JSON.stringify(body),
-          keepalive: true,
-          credentials: "omit"
-        });
-        return await res.json();
-      } catch {
-        return {
-          status: "review",
-          score: 50,
-          reasons: ["unreachable_backend"],
-          requestId: crypto.randomUUID()
-        };
-      }
-    }
-  };
+  return r;
 }

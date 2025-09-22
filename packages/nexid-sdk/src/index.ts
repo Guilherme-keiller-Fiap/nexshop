@@ -22,7 +22,7 @@ export interface VerifyRequest {
 }
 
 export interface VerifyResponse {
-  status: RiskDecision;
+  status: RiskDecision | "processing";
   score: number;
   reasons: string[];
   requestId: string;
@@ -33,6 +33,11 @@ export type InitOptions = {
   apiKey?: string;
   context?: VerifyRequest["context"];
   sampleRate?: number;
+};
+
+export type PollOptions = {
+  intervalMs?: number;
+  timeoutMs?: number;
 };
 
 let started = false;
@@ -59,25 +64,45 @@ function snapshot(): VerifyRequest["snapshot"] {
   };
 }
 
+function resultUrlFor(endpoint: string, id: string) {
+  try {
+    const u = new URL(endpoint);
+    const path = u.pathname.endsWith("/identity/verify")
+      ? u.pathname.replace(/\/identity\/verify$/, `/identity/result/${id}`)
+      : `/identity/result/${id}`;
+    return `${u.origin}${path}`;
+  } catch {
+    return `/identity/result/${id}`;
+  }
+}
+
 export function initSDK(opts: InitOptions) {
   if (!started && typeof window !== "undefined") {
     started = true;
-    window.addEventListener("mousemove", () => { mouseMoves++; }, { passive: true });
-    window.addEventListener("blur", () => { lastBlur = Date.now(); }, { passive: true });
+    window.addEventListener("mousemove", () => {
+      mouseMoves++;
+    }, { passive: true });
+    window.addEventListener("blur", () => {
+      lastBlur = Date.now();
+    }, { passive: true });
     window.addEventListener("focus", () => {
       if (lastBlur) tabInactiveMs += Date.now() - lastBlur;
     }, { passive: true });
   }
 
   return {
-    async verify(payload: Partial<Omit<VerifyRequest, "snapshot">> = {}): Promise<VerifyResponse> {
+    async verify(payload: Partial<Omit<VerifyRequest, "snapshot">> = {}, options?: { async?: boolean }): Promise<VerifyResponse> {
       const body: VerifyRequest = {
         context: payload.context ?? opts.context ?? "login",
         userId: payload.userId,
         emailHash: payload.emailHash,
         snapshot: snapshot()
       };
-      const res = await fetch(opts.endpoint, {
+      let url = opts.endpoint;
+      if (options?.async) {
+        url += url.includes("?") ? "&async=1" : "?async=1";
+      }
+      const res = await fetch(url, {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -88,6 +113,26 @@ export function initSDK(opts: InitOptions) {
         credentials: "omit"
       });
       return res.json();
+    },
+
+    async poll(requestId: string, p?: PollOptions): Promise<VerifyResponse> {
+      const interval = p?.intervalMs ?? 800;
+      const timeout = p?.timeoutMs ?? 10000;
+      const deadline = Date.now() + timeout;
+      const url = resultUrlFor(opts.endpoint, requestId);
+      for (;;) {
+        const r = await fetch(url, {
+          method: "GET",
+          headers: {
+            ...(opts.apiKey ? { "x-api-key": opts.apiKey } : {})
+          },
+          credentials: "omit"
+        });
+        const j = (await r.json()) as VerifyResponse;
+        if (j.status !== "processing") return j;
+        if (Date.now() > deadline) return j;
+        await new Promise((res) => setTimeout(res, interval));
+      }
     }
   };
 }
