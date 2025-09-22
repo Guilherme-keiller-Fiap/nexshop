@@ -1,74 +1,23 @@
-import type { VerifyRequest, VerifyResponse } from "../../types";
+import { initSDK as _initSDK } from "@nexshop/nexid-sdk";
+import type { VerifyResponse } from "@nexshop/nexid-sdk";
+import { IDENTITY_ENDPOINT, IDENTITY_API_KEY } from "./config";
 
-type InitOptions = {
-  endpoint: string;
-  apiKey?: string;
-  context?: VerifyRequest["context"];
-  sampleRate?: number;
-};
+export const initSDK = _initSDK;
 
-let started = false;
-let sessionId = crypto.randomUUID();
-let mouseMoves = 0;
-let tabInactiveMs = 0;
-let lastBlur = 0;
-let pageStart = Date.now();
+const sdk = _initSDK({ endpoint: IDENTITY_ENDPOINT, apiKey: IDENTITY_API_KEY });
 
-function snapshot(): VerifyRequest["snapshot"] {
-  const nav = navigator as any;
-  return {
-    userAgent: navigator.userAgent,
-    languages: navigator.languages,
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone ?? "unknown",
-    screen: { w: screen.width, h: screen.height, dpr: devicePixelRatio },
-    platform: nav.platform ?? "unknown",
-    sessionId,
-    pageTimeMs: Date.now() - pageStart,
-    mouseMoves,
-    tabInactiveMs,
-    lastActivityTs: Date.now(),
-    sdkVersion: "1.0.0"
-  };
-}
-
-export function initSDK(opts: InitOptions) {
-  if (!started) {
-    started = true;
-    window.addEventListener("mousemove", () => { mouseMoves++; }, { passive: true });
-    window.addEventListener("blur", () => { lastBlur = Date.now(); }, { passive: true });
-    window.addEventListener("focus", () => {
-      if (lastBlur) tabInactiveMs += Date.now() - lastBlur;
-    }, { passive: true });
+export async function verifyIdentity(p: {
+  context: "login" | "checkout" | "sensitive";
+  emailHash?: string;
+  userId?: string;
+  async?: boolean;
+}): Promise<VerifyResponse> {
+  const r = await sdk.verify(
+    { context: p.context, emailHash: p.emailHash, userId: p.userId },
+    { async: !!p.async }
+  );
+  if (r.status === "processing") {
+    return sdk.poll(r.requestId, { intervalMs: 700, timeoutMs: 10000 });
   }
-
-  return {
-    async verify(payload: Partial<Omit<VerifyRequest, "snapshot">> = {}): Promise<VerifyResponse> {
-      const body: VerifyRequest = {
-        context: payload.context ?? opts.context ?? "login",
-        userId: payload.userId,
-        emailHash: payload.emailHash,
-        snapshot: snapshot()
-      };
-      try {
-        const res = await fetch(opts.endpoint, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            ...(opts.apiKey ? { "x-api-key": opts.apiKey } : {})
-          },
-          body: JSON.stringify(body),
-          keepalive: true,
-          credentials: "omit"
-        });
-        return await res.json();
-      } catch {
-        return {
-          status: "review",
-          score: 50,
-          reasons: ["unreachable_backend"],
-          requestId: crypto.randomUUID()
-        };
-      }
-    }
-  };
+  return r;
 }
