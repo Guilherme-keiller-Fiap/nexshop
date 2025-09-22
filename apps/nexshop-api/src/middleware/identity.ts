@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import { cfg } from "../config.js";
+import { processNow, enqueue } from "../core/jobs.js";
 
 type RiskDecision = "allow" | "review" | "deny";
 
@@ -38,29 +39,6 @@ function parseIp(req: Request): string {
   return (req.ip || "").toString();
 }
 
-function clamp(n: number, min = 0, max = 1) {
-  return Math.max(min, Math.min(max, n));
-}
-
-function scoreFromSnapshot(s: ClientSnapshot) {
-  const t = s.pageTimeMs;
-  const m = s.mouseMoves;
-  const inact = s.tabInactiveMs;
-
-  const timeScore = t >= 3000 ? 0.9 : t >= 1500 ? 0.75 : 0.4;
-  const mouseScore = m >= 6 ? 0.9 : m >= 3 ? 0.75 : 0.45;
-  const inactivityPenalty = inact >= 60_000 ? 0.25 : 0;
-
-  const base = clamp((timeScore + mouseScore) / 2 - inactivityPenalty, 0, 1);
-  return base;
-}
-
-function decide(score0to100: number): RiskDecision {
-  if (score0to100 >= 75) return "allow";
-  if (score0to100 >= cfg.reviewMinScore) return "review";
-  return "deny";
-}
-
 function validateBody(body: any): body is VerifyRequest {
   if (!body || typeof body !== "object") return false;
   if (!body.snapshot || typeof body.snapshot !== "object") return false;
@@ -70,51 +48,32 @@ function validateBody(body: any): body is VerifyRequest {
   return okCtx && keys.every((k) => k in s);
 }
 
-export function createVerifyMiddleware(opts?: { sensitivity?: number }) {
-  const sensitivity = typeof opts?.sensitivity === "number" ? opts!.sensitivity : cfg.sensitivity;
-  return (req: Request, res: Response, _next: NextFunction) => {
+export function createVerifyMiddleware(_: { sensitivity?: number } = {}) {
+  return async (req: Request, res: Response, _next: NextFunction) => {
     const body = req.body as VerifyRequest;
     if (!validateBody(body)) {
       res.status(400).json({ error: "invalid_payload" });
       return;
     }
-
     const ip = parseIp(req);
-    const reasons: string[] = [];
+    const isAsync =
+      String(req.query.async || "").toLowerCase() === "1" ||
+      String(req.headers["x-async"] || "").toLowerCase() === "1" ||
+      String(req.headers["x-async"] || "").toLowerCase() === "true";
 
-    if (cfg.blockedIps.includes(ip)) {
-      const resp: VerifyResponse = {
-        status: "deny",
-        score: 10,
-        reasons: ["blocked_ip", ...reasons],
-        requestId: crypto.randomUUID()
+    if (isAsync) {
+      const id = enqueue(body, ip, 1500);
+      const pending: VerifyResponse = {
+        status: "review",
+        score: 0,
+        reasons: ["processing"],
+        requestId: id
       };
-      res.status(200).json(resp);
+      res.status(202).json(pending);
       return;
     }
 
-    const base = scoreFromSnapshot(body.snapshot);
-    let score = base;
-
-    if (cfg.trustedIps.includes(ip)) {
-      score = clamp(score + 0.1);
-      reasons.push("trusted_ip");
-    }
-
-    if (body.snapshot.tabInactiveMs >= 60_000) reasons.push("long_inactive_tab");
-    if (body.snapshot.pageTimeMs < 1500) reasons.push("low_page_time");
-    if (body.snapshot.mouseMoves < 3) reasons.push("low_mouse_activity");
-
-    const adjusted = clamp(score * (1 - 0.3 * clamp(sensitivity, 0, 1)), 0, 1);
-    const score100 = Math.round(adjusted * 100);
-
-    const status = decide(score100);
-    const resp: VerifyResponse = {
-      status,
-      score: score100,
-      reasons: reasons.length ? reasons : ["ok"],
-      requestId: crypto.randomUUID()
-    };
+    const resp = await processNow(body, ip);
     res.status(200).json(resp);
   };
 }
