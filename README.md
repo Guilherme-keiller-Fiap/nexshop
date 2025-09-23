@@ -212,4 +212,4 @@ pnpm --filter @nexshop/nexid-sdk build
 ```
 
 ### Nome: Guilherme heinrih Keiller RM:551298
-### Link do video: 
+### Link do video: https://youtu.be/AH-J3qABlyI
